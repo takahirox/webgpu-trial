@@ -1,6 +1,6 @@
 <html>
   <head>
-    <title>WebGPU triangle example</title>
+    <title>WebGPU triangle MSAA example</title>
     <style>
       body {
         margin: 0;
@@ -41,10 +41,12 @@
         const canvas = document.createElement('canvas');
         document.body.appendChild(canvas);
         const context = canvas.getContext('gpupresent');
+        const format = 'bgra8unorm'
         const swapChain = context.configureSwapChain({
           device,
-          format: 'bgra8unorm'
+          format
         });
+        const sampleCount = 4;
         const pipeline = device.createRenderPipeline({
           layout: device.createPipelineLayout({bindGroupLayouts: []}),
           vertexStage: {
@@ -65,16 +67,29 @@
           },
           primitiveTopology: 'triangle-list',
           colorStates: [{
-            format: 'bgra8unorm'
-          }]
+            format
+          }],
+          sampleCount
         });
+
+        const texture = device.createTexture({
+          size: {
+            width: Math.floor(window.innerWidth * window.devicePixelRatio),
+            height: Math.floor(window.innerHeight * window.devicePixelRatio),
+            depth: 1
+          },
+          sampleCount,
+          format,
+          usage: GPUTextureUsage.OUTPUT_ATTACHMENT
+        });
+        const attachment = texture.createView();
 
         const frame = () => {
           const commandEncoder = device.createCommandEncoder({});
-          const textureView = swapChain.getCurrentTexture().createView();
           const renderPassDescriptor = {
             colorAttachments: [{
-              attachment: textureView,
+              attachment: attachment,
+              resolveTarget: swapChain.getCurrentTexture().createView(),
               loadValue: {r: 0.0, g: 0.0, b: 0.0, a: 1.0}
             }]
           };
