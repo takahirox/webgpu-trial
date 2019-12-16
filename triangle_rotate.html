@@ -1,6 +1,6 @@
 <html>
   <head>
-    <title>WebGPU triangle example</title>
+    <title>WebGPU triangle MSAA example</title>
     <style>
       body {
         margin: 0;
@@ -13,25 +13,34 @@
   <body>
     <script type="module">
       import glslangModule from './js/glslang.js';
+      import glMatrixModule from './js/glmatrix.js';
 
       // @TODO: Detect WebGPU capability
 
       const run = async () => {
         const glslang = await glslangModule();
+        const glMatrix = await glMatrixModule();
+        const mat4 = glMatrix.mat4;
 
         const vertexShaderCode = `#version 450
+          layout(set=0, binding=0) uniform Uniforms {
+            mat4 modelMatrix;
+          } uniforms;
+
           const vec2 pos[3] = vec2[3](
             vec2(0.0f, 0.5f),
             vec2(-0.5f, -0.5f),
             vec2(0.5f, -0.5f)
           );
+
           void main() {
-            gl_Position = vec4(pos[gl_VertexIndex], 0.0, 1.0);
+            gl_Position = uniforms.modelMatrix * vec4(pos[gl_VertexIndex], 0.0, 1.0);
           }
         `;
 
         const fragmentShaderCode = `#version 450
           layout(location = 0) out vec4 outColor;
+
           void main() {
             outColor = vec4(1.0, 0.0, 0.0, 1.0);
           }
@@ -42,12 +51,36 @@
         const canvas = document.createElement('canvas');
         document.body.appendChild(canvas);
         const context = canvas.getContext('gpupresent');
+        const format = 'bgra8unorm'
         const swapChain = context.configureSwapChain({
           device,
-          format: 'bgra8unorm'
+          format
         });
+        const uniformsBindGroupLayout = device.createBindGroupLayout({
+          bindings: [{
+            binding: 0,
+            visibility: 1,
+            type: 'uniform-buffer'
+          }]
+        });
+        const uniformBuffer = device.createBuffer({
+          size: 4 * 16, // 4x4 float32 matrix
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        const uniformBindGroup = device.createBindGroup({
+          layout: uniformsBindGroupLayout,
+          bindings: [{
+            binding: 0,
+            resource: {
+              buffer: uniformBuffer
+            }
+          }]
+        });
+        const modelMatrix = mat4.identity(mat4.create());
+        let rotation = 0;
+        const sampleCount = 4;
         const pipeline = device.createRenderPipeline({
-          layout: device.createPipelineLayout({bindGroupLayouts: []}),
+          layout: device.createPipelineLayout({bindGroupLayouts: [uniformsBindGroupLayout]}),
           vertexStage: {
             module: device.createShaderModule({
               code: glslang.compileGLSL(vertexShaderCode, 'vertex'),
@@ -66,24 +99,47 @@
           },
           primitiveTopology: 'triangle-list',
           colorStates: [{
-            format: 'bgra8unorm'
-          }]
+            format
+          }],
+          sampleCount
         });
 
+        const texture = device.createTexture({
+          size: {
+            width: Math.floor(window.innerWidth * window.devicePixelRatio),
+            height: Math.floor(window.innerHeight * window.devicePixelRatio),
+            depth: 1
+          },
+          sampleCount,
+          format,
+          usage: GPUTextureUsage.OUTPUT_ATTACHMENT
+        });
+        const attachment = texture.createView();
+
         const frame = () => {
+          requestAnimationFrame(frame);
+          rotate(modelMatrix);
+          uniformBuffer.setSubData(0, modelMatrix);
           const commandEncoder = device.createCommandEncoder({});
-          const textureView = swapChain.getCurrentTexture().createView();
           const renderPassDescriptor = {
             colorAttachments: [{
-              attachment: textureView,
+              attachment: attachment,
+              resolveTarget: swapChain.getCurrentTexture().createView(),
               loadValue: {r: 0.0, g: 0.0, b: 0.0, a: 1.0}
             }]
           };
           const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
           passEncoder.setPipeline(pipeline);
+          passEncoder.setBindGroup(0, uniformBindGroup);
           passEncoder.draw(3, 1, 0, 0);
           passEncoder.endPass();
           device.defaultQueue.submit([commandEncoder.finish()]);
+        };
+
+        const rotate = matrix => {
+          mat4.fromZRotation(matrix, rotation * Math.PI / 180);
+          rotation++;
+          return matrix;
         };
 
         const onResize = event => {

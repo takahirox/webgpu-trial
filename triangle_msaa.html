@@ -17,6 +17,8 @@
       // @TODO: Detect WebGPU capability
 
       const run = async () => {
+        const glslang = await glslangModule();
+
         const vertexShaderCode = `#version 450
           const vec2 pos[3] = vec2[3](
             vec2(0.0f, 0.5f),
@@ -35,7 +37,6 @@
           }
         `;
 
-        const glslang = await glslangModule();
         const adapter = await navigator.gpu.requestAdapter();
         const device = await adapter.requestDevice();
         const canvas = document.createElement('canvas');
