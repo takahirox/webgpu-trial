@@ -1,0 +1,106 @@
+<html>
+  <head>
+    <title>WebGPU triangle example</title>
+    <style>
+      body {
+        margin: 0;
+        background-color: #000;
+        color: #fff;
+        overscroll-behavior: none;
+      }
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      import glslangModule from 'https://unpkg.com/@webgpu/glslang@0.0.12/dist/web-devel/glslang.js';
+
+      // @TODO: Detect WebGPU capability
+
+      const run = async () => {
+        const vertexShaderCode = `#version 450
+          const vec2 pos[3] = vec2[3](
+            vec2(0.0f, 0.5f),
+            vec2(-0.5f, -0.5f),
+            vec2(0.5f, -0.5f)
+          );
+          void main() {
+            gl_Position = vec4(pos[gl_VertexIndex], 0.0, 1.0);
+          }
+        `;
+
+        const fragmentShaderCode = `#version 450
+          layout(location = 0) out vec4 outColor;
+          void main() {
+            outColor = vec4(1.0, 0.0, 0.0, 1.0);
+          }
+        `;
+
+        const glslang = await glslangModule();
+        const adapter = await navigator.gpu.requestAdapter();
+        const device = await adapter.requestDevice();
+        const canvas = document.createElement('canvas');
+        document.body.appendChild(canvas);
+        const context = canvas.getContext('gpupresent');
+        const swapChain = context.configureSwapChain({
+          device,
+          format: 'bgra8unorm'
+        });
+        const pipeline = device.createRenderPipeline({
+          layout: device.createPipelineLayout({bindGroupLayouts: []}),
+          vertexStage: {
+            module: device.createShaderModule({
+              code: glslang.compileGLSL(vertexShaderCode, 'vertex'),
+              source: vertexShaderCode,
+              transform: source => glslang.compileGLSL(source, 'vertex')
+            }),
+            entryPoint: 'main'
+          },
+          fragmentStage: {
+            module: device.createShaderModule({
+              code: glslang.compileGLSL(fragmentShaderCode, 'fragment'),
+              source: fragmentShaderCode,
+              transform: source => glslang.compileGLSL(source, 'fragment')
+            }),
+            entryPoint: 'main'
+          },
+          primitiveTopology: 'triangle-list',
+          colorStates: [{
+            format: 'bgra8unorm'
+          }]
+        });
+
+        const frame = () => {
+          const commandEncoder = device.createCommandEncoder({});
+          const textureView = swapChain.getCurrentTexture().createView();
+          const renderPassDescriptor = {
+            colorAttachments: [{
+              attachment: textureView,
+              loadValue: {r: 0.0, g: 0.0, b: 0.0, a: 1.0}
+            }]
+          };
+          const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+          passEncoder.setPipeline(pipeline);
+          passEncoder.draw(3, 1, 0, 0);
+          passEncoder.endPass();
+          device.defaultQueue.submit([commandEncoder.finish()]);
+        };
+
+        const onResize = event => {
+          const width = window.innerWidth;
+          const height = window.innerHeight;
+          canvas.width = Math.floor(window.innerWidth * window.devicePixelRatio);
+          canvas.height = Math.floor(window.innerHeight * window.devicePixelRatio);
+          canvas.style.width = width + 'px';
+          canvas.style.height = height + 'px';
+        };
+
+        window.addEventListener('resize', onResize, false);
+
+        onResize();
+        frame();
+      };
+
+      run();
+    </script>
+  </body>
+</html>
