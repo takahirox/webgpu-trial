@@ -63,9 +63,9 @@
 
         vertexBuffer.setSubData(0, new Float32Array([
           // position: vec3, color: vec4
-          0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-          -0.5, -0.5, 0.0, 0.0, 1.0, 0.0, 1.0,
-          0.5, -0.5, 0.0, 0.0, 0.0, 1.0, 1.0
+          -0.5, -0.5, 0.0, 1.0, 0.0, 0.0, 1.0,
+          0.5, -0.5, 0.0, 0.0, 1.0, 0.0, 1.0,
+          0.5, 0.5, 0.0, 0.0, 0.0, 1.0, 1.0
         ]));
 
         const uniformsBindGroupLayout = device.createBindGroupLayout({
