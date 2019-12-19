@@ -1,6 +1,6 @@
 <html>
   <head>
-    <title>WebGPU triangle rotate example</title>
+    <title>WebGPU triangle texture example</title>
     <style>
       body {
         margin: 0;
@@ -25,22 +25,25 @@
             mat4 modelMatrix;
           } uniforms;
 
-          const vec2 pos[3] = vec2[3](
-            vec2(-0.5f, -0.5f),
-            vec2(0.5f, -0.5f),
-            vec2(0.5f, 0.5f)
-          );
+          layout(location = 0) in vec3 position;
+          layout(location = 1) in vec2 uv;
+
+          layout(location = 0) out vec2 fragUv;
 
           void main() {
-            gl_Position = uniforms.modelMatrix * vec4(pos[gl_VertexIndex], 0.0, 1.0);
+            gl_Position = uniforms.modelMatrix * vec4(position, 1.0);
+            fragUv = uv;
           }
         `;
 
         const fragmentShaderCode = `#version 450
+          layout(set=0, binding=1) uniform sampler testSampler;
+          layout(set=0, binding=2) uniform texture2D testTexture;
+          layout(location = 0) in vec2 fragUv;
           layout(location = 0) out vec4 outColor;
 
           void main() {
-            outColor = vec4(1.0, 0.0, 0.0, 1.0);
+            outColor = texture(sampler2D(testTexture, testSampler), fragUv);
           }
         `;
 
@@ -54,17 +57,93 @@
           device,
           format
         });
+
+        const vertexBuffer = device.createBuffer({
+          size: 4 * 15, // float32 (vec3, vec2) x 3
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+        });
+
+        vertexBuffer.setSubData(0, new Float32Array([
+          // position: vec3, uv: vec2
+          -0.5, -0.5, 0.0, 0.0, 0.0,
+          0.5, -0.5, 0.0, 1.0, 0.0,
+          0.5, 0.5, 0.0, 1.0, 1.0
+        ]));
+
         const uniformsBindGroupLayout = device.createBindGroupLayout({
           bindings: [{
             binding: 0,
-            visibility: 1,
+            visibility: GPUShaderStage.VERTEX,
             type: 'uniform-buffer'
+          }, {
+            binding: 1,
+            visibility: GPUShaderStage.FRAGMENT,
+            type: 'sampler'
+          }, {
+            binding: 2,
+            visibility: GPUShaderStage.FRAGMENT,
+            type: 'sampled-texture'
           }]
         });
+
+        const textureWidth = 64;
+        const textureHeight = 64;
+
+        const dataTexture = device.createTexture({
+          size: {
+            width: textureWidth,
+            height: textureHeight,
+            depth: 1
+          },
+          format: 'rgba8unorm',
+          usage: GPUTextureUsage.SAMPLED | GPUTextureUsage.COPY_DST
+        });
+
+        const textureDataBuffer = device.createBuffer({
+          size: textureWidth * textureHeight * 4,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC
+        });
+
+        const data = new Uint8Array(textureWidth * textureHeight * 4);
+        for (let i = 0; i < textureWidth * textureHeight; i++) {
+          const baseIndex = i * 4;
+          data[baseIndex + 0] = Math.floor(Math.random() * 256);
+          data[baseIndex + 1] = Math.floor(Math.random() * 256);
+          data[baseIndex + 2] = Math.floor(Math.random() * 256);
+          data[baseIndex + 3] = 255;
+        }
+
+        textureDataBuffer.setSubData(0, data);
+
+        const textureCommandEncoder = device.createCommandEncoder({});
+        textureCommandEncoder.copyBufferToTexture({
+          buffer: textureDataBuffer,
+          rowPitch: textureWidth * 4,
+          imageHeight: 0
+        }, {
+          texture: dataTexture
+        }, {
+          width: textureWidth,
+          height: textureHeight,
+          depth: 1
+        });
+
+        device.defaultQueue.submit([textureCommandEncoder.finish()]);
+
+        const modelMatrix = mat4.identity(mat4.create());
+
+        const sampleCount = 4;
+
         const uniformBuffer = device.createBuffer({
           size: 4 * 16, // 4x4 float32 matrix
           usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
+
+        const sampler = device.createSampler({
+          magFilter: 'linear',
+          minFilter: 'linear'
+        });
+
         const uniformBindGroup = device.createBindGroup({
           layout: uniformsBindGroupLayout,
           bindings: [{
@@ -72,11 +151,15 @@
             resource: {
               buffer: uniformBuffer
             }
+          }, {
+            binding: 1,
+            resource: sampler
+          }, {
+            binding: 2,
+            resource: dataTexture.createView()
           }]
         });
-        const modelMatrix = mat4.identity(mat4.create());
-        let rotation = 0;
-        const sampleCount = 4;
+
         const pipeline = device.createRenderPipeline({
           layout: device.createPipelineLayout({bindGroupLayouts: [uniformsBindGroupLayout]}),
           vertexStage: {
@@ -96,6 +179,20 @@
             entryPoint: 'main'
           },
           primitiveTopology: 'triangle-list',
+          vertexState: {
+            vertexBuffers: [{
+              arrayStride: 4 * 5,
+              attributes: [{
+                shaderLocation: 0,
+                offset: 0,
+                format: 'float4'
+              }, {
+                shaderLocation: 1,
+                offset: 4 * 3,
+                format: 'float2'
+              }]
+            }]
+          },
           colorStates: [{
             format
           }],
@@ -112,7 +209,10 @@
           format,
           usage: GPUTextureUsage.OUTPUT_ATTACHMENT
         });
+
         const attachment = texture.createView();
+
+        let rotation = 0;
 
         const frame = () => {
           requestAnimationFrame(frame);
@@ -128,6 +228,7 @@
           };
           const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
           passEncoder.setPipeline(pipeline);
+          passEncoder.setVertexBuffer(0, vertexBuffer);
           passEncoder.setBindGroup(0, uniformBindGroup);
           passEncoder.draw(3, 1, 0, 0);
           passEncoder.endPass();
