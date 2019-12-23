@@ -262,10 +262,11 @@ export default class WebGPURenderer {
     }
 
     const vertices = this._verticesManager.get(object.geometry, this._device);
-    const uniformBindGroup = this._uniformsManager.get(object, camera, program.uniformGroupLayout, this._device);
+    const uniforms = this._uniformsManager.get(object, camera, program, this._device);
     const indexAttribute = object.geometry.getIndex();
+
     this._passEncoder.setVertexBuffer(0, vertices.buffer);
-    this._passEncoder.setBindGroup(0, uniformBindGroup.bindGroup.group);
+    this._passEncoder.setBindGroup(0, uniforms.bindGroup);
 
     if (indexAttribute) {
       const indices = this._indicesManager.get(object.geometry, this._device);
@@ -321,7 +322,6 @@ class WebGPUProgramManager {
       this.map.set(material.type, new WebGPUProgram(
         shader.vertexShaderCode,
         shader.fragmentShaderCode,
-        'bgra8unorm',
         4,
         device
       ));
@@ -331,10 +331,21 @@ class WebGPUProgramManager {
 }
 
 class WebGPUProgram {
-  constructor(vertexShaderCode, fragmentShaderCode, format, sampleCount, device) {
-    this.uniformGroupLayout = new WebGPUUniformGroupLayout(device);
+  constructor(vertexShaderCode, fragmentShaderCode, sampleCount, device) {
+    this.uniformGroupLayout = device.createBindGroupLayout({
+      bindings: [{
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX,
+        type: 'uniform-buffer'
+      }, {
+        binding: 1,
+        visibility: GPUShaderStage.FRAGMENT,
+        type: 'uniform-buffer'
+      }]
+    });
+
     this.pipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({bindGroupLayouts: [this.uniformGroupLayout.layout]}),
+      layout: device.createPipelineLayout({bindGroupLayouts: [this.uniformGroupLayout]}),
       vertexStage: {
         module: device.createShaderModule({
           code: glslang.compileGLSL(vertexShaderCode, 'vertex'),
@@ -380,7 +391,7 @@ class WebGPUProgram {
         }]
       },
       colorStates: [{
-        format: format,
+        format: 'bgra8unorm',
         colorBlend: {
           srcFactor: 'src-alpha',
           dstFactor: 'one-minus-src-alpha',
@@ -390,6 +401,25 @@ class WebGPUProgram {
       sampleCount: sampleCount
     });
   }
+
+  createUniformBindGroup(buffers, device) {
+    const bindings = [];
+    for (let i = 0; i < buffers.length; i++) {
+      const buffer = buffers[i];
+      bindings.push({
+        binding: i,
+        resource: {
+          buffer: buffer.buffer,
+          size: buffer.byteLength
+        }
+      });
+    }
+    return device.createBindGroup({
+      layout: this.uniformGroupLayout,
+      bindings: bindings
+    });
+  }
+
 }
 
 class WebGPUUniformsManager {
@@ -397,37 +427,40 @@ class WebGPUUniformsManager {
     this.map = new Map();
   }
 
-  get(object, camera, layout, device) {
+  get(object, camera, program, device) {
     if (!this.map.has(object)) {
-      const buffers = [];
-      buffers.push(new WebGPUUniformBuffer((16 * 3 + 12) * 4, device)); // vertex
-      buffers.push(new WebGPUUniformBuffer((3 + 1) * 4, device)); // fragment
-      this.map.set(object, {
-        buffers: buffers,
-        bindGroup: new WebGPUUniformBindGroup(layout, buffers, device)
-      });
+      this.map.set(object, new WebGPUUniforms(program, device));
     }
-    const uniform = this.map.get(object);
-    this._update(uniform.buffers, object, camera, layout, device);
-    return uniform;
-    return this.map.get(object);
+    const uniforms = this.map.get(object);
+    uniforms.update(object, camera);
+    return uniforms;
+  }
+}
+
+class WebGPUUniforms {
+  constructor(program, device) {
+    this.buffers = [];
+    this.buffers.push(new WebGPUUniformBuffer((16 * 3 + 12) * 4, device)); // vertex
+    this.buffers.push(new WebGPUUniformBuffer((3 + 1) * 4, device)); // fragment
+    this.bindGroup = program.createUniformBindGroup(this.buffers, device);
   }
 
-  _update(buffers, object, camera, layout, device) {
+  update(object, camera) {
     object.modelViewMatrix.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);
     object.normalMatrix.getNormalMatrix(object.modelViewMatrix);
 
     const material = object.material;
-    buffers[0].updateMatrix4(0, object.matrixWorld);
-    buffers[0].updateMatrix4(16 * 4, camera.matrixWorldInverse);
-    buffers[0].updateMatrix4(16 * 2 * 4, camera.projectionMatrix);
-    buffers[0].updateMatrix3(16 * 3 * 4, object.normalMatrix);
-    buffers[0].upload();
+    this.buffers[0].updateMatrix4(0, object.matrixWorld);
+    this.buffers[0].updateMatrix4(16 * 4, camera.matrixWorldInverse);
+    this.buffers[0].updateMatrix4(16 * 2 * 4, camera.projectionMatrix);
+    this.buffers[0].updateMatrix3(16 * 3 * 4, object.normalMatrix);
+    this.buffers[0].upload();
+
     if (material.color) {
-      buffers[1].updateColor(0, material.color);
+      this.buffers[1].updateColor(0, material.color);
     }
-    buffers[1].updateFloat(3 * 4, material.opacity);
-    buffers[1].upload();
+    this.buffers[1].updateFloat(3 * 4, material.opacity);
+    this.buffers[1].upload();
   }
 }
 
@@ -482,42 +515,6 @@ class WebGPUUniformBuffer {
 
   updateFloat(offset, value) {
     this.float32Array[offset / 4] = value;
-  }
-}
-
-class WebGPUUniformGroupLayout {
-  constructor(device) {
-    this.layout = device.createBindGroupLayout({
-      bindings: [{
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX,
-        type: 'uniform-buffer'
-      }, {
-        binding: 1,
-        visibility: GPUShaderStage.FRAGMENT,
-        type: 'uniform-buffer'
-      }]
-    });
-  }
-}
-
-class WebGPUUniformBindGroup {
-  constructor(layout, buffers, device) {
-    const bindings = [];
-    for (let i = 0; i < buffers.length; i++) {
-      const buffer = buffers[i];
-      bindings.push({
-        binding: i,
-        resource: {
-          buffer: buffer.buffer,
-          size: buffer.byteLength
-        }
-      });
-    }
-    this.group = device.createBindGroup({
-      layout: layout.layout,
-      bindings: bindings
-    });
   }
 }
 
