@@ -13,7 +13,46 @@ const reversePainterSort = (a, b) => {
   return b.z - a.z;
 };
 
-const vertexShaderCode = `#version 450
+const ShaderLibs = {};
+
+ShaderLibs.MeshBasicMaterial = {
+  vertexShaderCode: `#version 450
+  layout(set=0, binding=0) uniform Uniforms {
+    mat4 modelMatrix;
+    mat4 viewMatrix;
+    mat4 projectionMatrix;
+    mat3 normalMatrix;
+  } uniforms;
+
+  layout(location = 0) in vec3 position;
+  layout(location = 1) in vec3 normal;
+  layout(location = 2) in vec2 uv;
+
+  layout(location = 0) out vec3 fragNormal;
+  layout(location = 1) out vec2 fragUv;
+
+  void main() {
+    gl_Position = uniforms.projectionMatrix * uniforms.viewMatrix * uniforms.modelMatrix * vec4(position, 1.0);
+    fragUv = uv;
+    fragNormal = normal;
+  }`,
+  fragmentShaderCode: `#version 450
+  layout(set=0, binding=1) uniform Uniforms {
+    vec3 color;
+    float opacity;
+  } uniforms;
+
+  layout(location = 0) in vec3 fragNormal;
+  layout(location = 1) in vec2 fragUv;
+  layout(location = 0) out vec4 outColor;
+
+  void main() {
+    outColor = vec4(uniforms.color, uniforms.opacity);
+  }`
+};
+
+ShaderLibs.MeshNormalMaterial = {
+  vertexShaderCode: `#version 450
   layout(set=0, binding=0) uniform Uniforms {
     mat4 modelMatrix;
     mat4 viewMatrix;
@@ -32,10 +71,8 @@ const vertexShaderCode = `#version 450
     gl_Position = uniforms.projectionMatrix * uniforms.viewMatrix * uniforms.modelMatrix * vec4(position, 1.0);
     fragUv = uv;
     fragNormal = normalize(uniforms.normalMatrix * normal);
-  }
-`;
-
-const fragmentShaderCode = `#version 450
+  }`,
+  fragmentShaderCode: `#version 450
   layout(set=0, binding=1) uniform Uniforms {
     vec3 color;
     float opacity;
@@ -49,8 +86,10 @@ const fragmentShaderCode = `#version 450
     // "+ (normalize(fragNormal) * 0.5 + 0.5)" is to check each surface
     vec3 normal = normalize(fragNormal);
     outColor = vec4((normal * 0.5 + 0.5), uniforms.opacity);
-  }
-`;
+  }`
+};
+
+let glslang = null;
 
 export default class WebGPURenderer {
   constructor() {
@@ -60,18 +99,21 @@ export default class WebGPURenderer {
     this._pixelRatio = 1.0;
 
     this._device = null;
-    this._glslang = null;
     this._verticesManager = null;
     this._indicesManager = null;
     this._uniformsManager = null;
+    this._programManager = null;
     this._swapChain = null;
     this._format = 'bgra8unorm';
     this._sampleCount = 4;
     this._passEncoder = null;
     this._commandEncoder = null;
-    this._uniformGroupLayout = null;
     this._colorAttachment = null;
     this._depthStencilAttachment = null;
+
+    this._cache = {
+      currentProgram: null
+    };
 
     this.domElement = document.createElement('canvas');
     this.context = this.domElement.getContext('gpupresent');
@@ -82,10 +124,11 @@ export default class WebGPURenderer {
         glslangModule()
       ]).then(results => {
         this._device = results[0];
-        this._glslang = results[1];
+        glslang = results[1];
         this._verticesManager = new WebGPUVerticesManager();
         this._indicesManager = new WebGPUIndicesManager();
         this._uniformsManager = new WebGPUUniformsManager();
+        this._programManager = new WebGPUProgramManager();
         this._swapChain = this.context.configureSwapChain({
           device: this._device,
           format: this._format
@@ -111,6 +154,8 @@ export default class WebGPURenderer {
     if (!this._device) {
       return;
     }
+
+    this._cache.currentProgram = null;
 
     scene.updateMatrixWorld();
     if (!camera.parent) {
@@ -209,8 +254,15 @@ export default class WebGPURenderer {
   }
 
   _renderObject(object, camera) {
+    const program = this._programManager.get(object.material, this._device);
+
+    if (this._cache.currentProgram !== program) {
+      this._passEncoder.setPipeline(program.pipeline);
+      this._cache.currentProgram = program;
+    }
+
     const vertices = this._verticesManager.get(object.geometry, this._device);
-    const uniformBindGroup = this._uniformsManager.get(object, camera, this._uniformGroupLayout, this._device);
+    const uniformBindGroup = this._uniformsManager.get(object, camera, program.uniformGroupLayout, this._device);
     const indexAttribute = object.geometry.getIndex();
     this._passEncoder.setVertexBuffer(0, vertices.buffer);
     this._passEncoder.setBindGroup(0, uniformBindGroup.bindGroup.group);
@@ -228,7 +280,7 @@ export default class WebGPURenderer {
 
   _setup() {
     this._commandEncoder = this._device.createCommandEncoder({});
-
+  
     const renderPassDescriptor = {
       colorAttachments: [{
         attachment: this._colorAttachment,
@@ -244,22 +296,7 @@ export default class WebGPURenderer {
       }
     };
 
-    if (!this._uniformGroupLayout) {
-      this._uniformGroupLayout = new WebGPUUniformGroupLayout(this._device);
-    }
-
-    if (!this._pipeline) {
-      this._pipeline = new WebGPUPipeline(
-        this._glslang,
-        this._format,
-        this._sampleCount,
-        [this._uniformGroupLayout.layout],
-        this._device
-      );
-    }
-
     this._passEncoder = this._commandEncoder.beginRenderPass(renderPassDescriptor);
-    this._passEncoder.setPipeline(this._pipeline.pipeline);
   }
 
   _finalize() {
@@ -268,10 +305,36 @@ export default class WebGPURenderer {
   }
 }
 
-class WebGPUPipeline {
-  constructor(glslang, format, sampleCount, bindingGroupLayouts, device) {
+class WebGPUProgramManager {
+  constructor() {
+    this.map = new Map();
+  }
+
+  get(material, device) {
+    if (!this.map.has(material.type)) {
+      const shader = ShaderLibs[material.type];
+
+      if (!shader) {
+        throw new Error('This type of material is not supported yet. ' + material.type);
+      }
+
+      this.map.set(material.type, new WebGPUProgram(
+        shader.vertexShaderCode,
+        shader.fragmentShaderCode,
+        'bgra8unorm',
+        4,
+        device
+      ));
+    }
+    return this.map.get(material.type);
+  }
+}
+
+class WebGPUProgram {
+  constructor(vertexShaderCode, fragmentShaderCode, format, sampleCount, device) {
+    this.uniformGroupLayout = new WebGPUUniformGroupLayout(device);
     this.pipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({bindGroupLayouts: bindingGroupLayouts}),
+      layout: device.createPipelineLayout({bindGroupLayouts: [this.uniformGroupLayout.layout]}),
       vertexStage: {
         module: device.createShaderModule({
           code: glslang.compileGLSL(vertexShaderCode, 'vertex'),
@@ -360,7 +423,9 @@ class WebGPUUniformsManager {
     buffers[0].updateMatrix4(16 * 2 * 4, camera.projectionMatrix);
     buffers[0].updateMatrix3(16 * 3 * 4, object.normalMatrix);
     buffers[0].upload();
-    //buffers[1].updateVector3(0, material.color);
+    if (material.color) {
+      buffers[1].updateColor(0, material.color);
+    }
     buffers[1].updateFloat(3 * 4, material.opacity);
     buffers[1].upload();
   }
@@ -406,6 +471,13 @@ class WebGPUUniformBuffer {
     this.float32Array[index] = vec3.x;
     this.float32Array[index + 1] = vec3.y;
     this.float32Array[index + 2] = vec3.z;
+  }
+
+  updateColor(offset, color) {
+    const index = offset / 4;
+    this.float32Array[index] = color.r;
+    this.float32Array[index + 1] = color.g;
+    this.float32Array[index + 2] = color.b;
   }
 
   updateFloat(offset, value) {
