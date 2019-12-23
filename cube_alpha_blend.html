@@ -302,6 +302,7 @@
         });
 
         const attachment = texture.createView();
+        const depthAttachment = depthTexture.createView();
 
         let rotation = 0;
 
@@ -335,7 +336,7 @@
               loadValue: {r: 0.0, g: 0.0, b: 0.0, a: 1.0}
             }],
             depthStencilAttachment: {
-              attachment: depthTexture.createView(),
+              attachment: depthAttachment,
               depthLoadValue: 1.0,
               depthStoreOp: "store",
               stencilLoadValue: 0,
