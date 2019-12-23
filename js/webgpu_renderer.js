@@ -282,7 +282,7 @@ export default class WebGPURenderer {
       this._cache.currentProgram = program;
     }
 
-    const vertices = this._verticesManager.get(object.geometry, this._device);
+    const vertices = this._verticesManager.get(object.geometry, program, this._device);
     const uniforms = this._uniformsManager.get(object, camera, program, this._device);
     const indexAttribute = object.geometry.getIndex();
 
@@ -402,7 +402,26 @@ class WebGPUProgram {
     });
   }
 
-  createUniformBindGroup(buffers, device) {
+  createVertices(geometry, device) {
+    const position = geometry.getAttribute('position');
+    const array = new Float32Array((3 + 3 + 2) * position.count);
+    return new WebGPUVertices(array, device);
+  }
+
+  createUniforms(device) {
+    const buffers = this._createUniformBuffers(device);
+    const bindGroup = this._createUniformBindGroup(buffers, device);
+    return new WebGPUUniforms(buffers, bindGroup);
+  }
+
+  _createUniformBuffers(device) {
+    const buffers = [];
+    buffers.push(new WebGPUUniformBuffer((16 * 3 + 12) * 4, device)); // vertex
+    buffers.push(new WebGPUUniformBuffer((3 + 1) * 4, device)); // fragment
+    return buffers;
+  }
+
+  _createUniformBindGroup(buffers, device) {
     const bindings = [];
     for (let i = 0; i < buffers.length; i++) {
       const buffer = buffers[i];
@@ -419,7 +438,6 @@ class WebGPUProgram {
       bindings: bindings
     });
   }
-
 }
 
 class WebGPUUniformsManager {
@@ -429,7 +447,7 @@ class WebGPUUniformsManager {
 
   get(object, camera, program, device) {
     if (!this.map.has(object)) {
-      this.map.set(object, new WebGPUUniforms(program, device));
+      this.map.set(object, program.createUniforms(device));
     }
     const uniforms = this.map.get(object);
     uniforms.update(object, camera);
@@ -438,11 +456,9 @@ class WebGPUUniformsManager {
 }
 
 class WebGPUUniforms {
-  constructor(program, device) {
-    this.buffers = [];
-    this.buffers.push(new WebGPUUniformBuffer((16 * 3 + 12) * 4, device)); // vertex
-    this.buffers.push(new WebGPUUniformBuffer((3 + 1) * 4, device)); // fragment
-    this.bindGroup = program.createUniformBindGroup(this.buffers, device);
+  constructor(buffers, bindGroup) {
+    this.buffers = buffers;
+    this.bindGroup = bindGroup;
   }
 
   update(object, camera) {
@@ -523,16 +539,27 @@ class WebGPUVerticesManager {
     this.map = new Map();
   }
 
-  get(geometry, device) {
+  get(geometry, program, device) {
     if (!this.map.has(geometry)) {
-      this.map.set(geometry, new WebGPUVertices(geometry, device));
+      const vertices = program.createVertices(geometry, device);
+      vertices.update(geometry);
+      vertices.upload();
+      this.map.set(geometry, vertices);
     }
     return this.map.get(geometry);
   }
 }
 
 class WebGPUVertices {
-  constructor(geometry, device) {
+  constructor(array, device) {
+    this.array = array;
+    this.buffer = device.createBuffer({
+      size: this.array.byteLength,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+    });
+  }
+
+  update(geometry) {
     const position = geometry.getAttribute('position');
     const normal = geometry.getAttribute('normal');
 
@@ -542,30 +569,25 @@ class WebGPUVertices {
     }
     const uv = geometry.getAttribute('uv');
 
-    const dataLength = position.array.length + normal.array.length + uv.array.length;
-    const data = new Float32Array(dataLength);
     let dataIndex = 0;
     let positionIndex = 0;
     let normalIndex = 0;
     let uvIndex = 0;
     for (let i = 0; i < position.count; i++) {
       for (let j = 0; j < position.itemSize; j++) {
-        data[dataIndex++] = position.array[positionIndex++];
+        this.array[dataIndex++] = position.array[positionIndex++];
       }
       for (let j = 0; j < normal.itemSize; j++) {
-        data[dataIndex++] = normal.array[normalIndex++];
+        this.array[dataIndex++] = normal.array[normalIndex++];
       }
       for (let j = 0; j < uv.itemSize; j++) {
-        data[dataIndex++] = uv.array[uvIndex++];
+        this.array[dataIndex++] = uv.array[uvIndex++];
       }
     }
+  }
 
-    this.buffer = device.createBuffer({
-      size: dataLength * 4,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
-    });
-
-    this.buffer.setSubData(0, data);
+  upload() {
+    this.buffer.setSubData(0, this.array);
   }
 }
 
@@ -576,29 +598,36 @@ class WebGPUIndicesManager {
 
   get(geometry, device) {
     if (!this.map.has(geometry)) {
-      this.map.set(geometry, new WebGPUIndices(geometry, device));
+      const indices = new WebGPUIndices(
+        // Buffer subdata size must be a multiple of 4 bytes
+        new Uint16Array(Math.floor((geometry.getIndex().array.byteLength + 3) / 4) * 4),
+        device
+      );
+      indices.update(geometry);
+      indices.upload();
+      this.map.set(geometry, indices);
     }
     return this.map.get(geometry);
   }
 }
 
 class WebGPUIndices {
-  constructor(geometry, device) {
-    // Buffer subdata size must be a multiple of 4 bytes
-    // @TODO Remove this cheap workaround
-
-    const index = geometry.getIndex();
-
-    const dataLength = index.array.length;
-    const data = new Uint16Array(dataLength + ((dataLength % 2) === 1 ? 1 : 0));
-    for (let i = 0; i < dataLength; i++) {
-      data[i] = index.array[i];
-    }
-
+  constructor(array, device) {
+    this.array = array;
     this.buffer = device.createBuffer({
-      size: Math.floor((dataLength * 2 + 3) / 4) * 4,
+      size: this.array.byteLength,
       usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST
     });
-    this.buffer.setSubData(0, data);
+  }
+
+  update(geometry) {
+    const index = geometry.getIndex();
+    for (let i = 0; i < index.array.length; i++) {
+      this.array[i] = index.array[i];
+    }
+  }
+
+  upload() {
+    this.buffer.setSubData(0, this.array);
   }
 }
