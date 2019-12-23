@@ -247,6 +247,27 @@ export default class WebGPURenderer {
     }
   }
 
+  _setup() {
+    this._commandEncoder = this._device.createCommandEncoder({});
+  
+    const renderPassDescriptor = {
+      colorAttachments: [{
+        attachment: this._colorAttachment,
+        resolveTarget: this._swapChain.getCurrentTexture().createView(),
+        loadValue: {r: 1.0, g: 1.0, b: 1.0, a: 1.0}
+      }],
+      depthStencilAttachment: {
+        attachment: this._depthStencilAttachment,
+        depthLoadValue: 1.0,
+        depthStoreOp: 'store',
+        stencilLoadValue: 0,
+        stencilStoreOp: 'store',
+      }
+    };
+
+    this._passEncoder = this._commandEncoder.beginRenderPass(renderPassDescriptor);
+  }
+
   _renderObjects(objects, camera) {
     for (const object of objects) {
       this._renderObject(object.object, camera);
@@ -277,27 +298,6 @@ export default class WebGPURenderer {
       const vertexCount = object.geometry.getAttribute('position').array.length;
       this._passEncoder.draw(vertexCount, 1, 0, 0);
     }
-  }
-
-  _setup() {
-    this._commandEncoder = this._device.createCommandEncoder({});
-  
-    const renderPassDescriptor = {
-      colorAttachments: [{
-        attachment: this._colorAttachment,
-        resolveTarget: this._swapChain.getCurrentTexture().createView(),
-        loadValue: {r: 1.0, g: 1.0, b: 1.0, a: 1.0}
-      }],
-      depthStencilAttachment: {
-        attachment: this._depthStencilAttachment,
-        depthLoadValue: 1.0,
-        depthStoreOp: 'store',
-        stencilLoadValue: 0,
-        stencilStoreOp: 'store',
-      }
-    };
-
-    this._passEncoder = this._commandEncoder.beginRenderPass(renderPassDescriptor);
   }
 
   _finalize() {
