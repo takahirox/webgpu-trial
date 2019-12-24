@@ -8,3 +8,4 @@ Turn on `#enable-unsafe-webgpu` via chrome://flags on Chrome Canary
 
 - [WebGPU specification](https://gpuweb.github.io/gpuweb/)
 - [WebGPU Samples](https://github.com/austinEng/webgpu-samples)
+- [Three.js WebGPURenderer experiment](https://github.com/takahirox/THREE.WebGPURenderer)
